@@ -1,0 +1,53 @@
+ _                    _   _          
+| |__  _ __ ___  __ _| |_| |__   ___ 
+| '_ \| '__/ _ \/ _` | __| '_ \ / _ \
+| |_) | | |  __/ (_| | |_| | | |  __/
+|_.__/|_|  \___|\__,_|\__|_| |_|\___|
+                                       
+# breathe - lightweight PDF viewer
+
+Originally called "lpdf," this project is a rewrite soft fork in C. 
+      https://lkrotowski.com/projects/lpdf
+It was initially developed by Łukasz Krotowski in C++, but I have converted it to C. This version uses a more basic, minimal library, making it less unique and allowing it to run on multiple Linux distributions. Instead of requiring a specific version of a PDF engine, it relies solely on the Poppler engine. 
+You can find more information at lkrotowski.com/projects/lpdf.
+     
+## 1. Building
+bash
+make
+
+Dependencies are Xlib and poppler-glib.
+
+Debian 
+sudo apt-get install build-essential libpoppler-glib-dev libx11-dev pkg-config
+
+Breathe uses the poppler-glib API. It has been built and tested with [Debian's libpoppler-glib-dev/unstable,now 24.08.0-2 amd64].
+
+## 2. Installation
+
+To install breathe (requires write access to /usr/local):
+bash
+sudo make install
+
+This will copy the executable and man page to the appropriate directories.
+
+## 3. Uninstallation
+
+To uninstall breathe:
+bash
+sudo make uninstall
+
+## 4. Customization
+
+Breathe can be customized by modifying the `config.h` file and recompiling.
+
+## 5. About the Name
+
+The name "breathe" is inspired by the iconic Pink Floyd song from their 1973 album "The Dark Side of the Moon". Just as the song encourages listeners to take a moment and breathe, this lightweight PDF viewer aims to provide a simple, uncluttered reading experience[5].
+
+## 6. License
+
+Breathe is free software distributed under the terms of the Do What The Fuck You Want To Public License, Version 2.
+
+## 6. Credits
+
+Breathe is based on lpdf by Łukasz Krotowski (https://lkrotowski.com), with modifications and C port by Malcolm Reed.

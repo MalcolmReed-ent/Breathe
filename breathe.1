@@ -1,0 +1,86 @@
+.TH BREATHE 1 breathe
+.SH NAME
+breathe \- lightweight PDF viewer
+.SH SYNOPSIS
+.B breathe
+.RB [ \-w
+.IR window ]
+.RI pdf_file
+.SH DESCRIPTION
+.B breathe
+is a minimalist PDF viewer built on poppler and Xlib
+.SH OPTIONS
+.TP
+.BI \-w " window"
+embeds breathe within the window identified by
+.I window
+.SH SHORTCUTS
+.TP
+.B [Ctrl-|Alt-]q or Esc
+Quit breathe.
+.TP
+.B [Ctrl-|Alt-]r
+Reload document.
+.TP
+.B Ctrl-Page Up
+Show previous page.
+.TP
+.B Ctrl-Page Down
+Show next page.
+.TP
+.B Ctrl-Home
+Show first page.
+.TP
+.B Ctrl-End
+Show last page.
+.TP
+.B z
+Fit page (default).
+.TP
+.B w
+Fit page width.
+.TP
+.B Up or Page Up
+Scroll up (small or large scroll).
+.TP
+.B Down or Page Down
+Scroll down (small or large scroll).
+.TP
+.B b
+Go back to previous location (after clicking a link).
+.TP
+.B Ctrl-c
+Copy selected text to clipboard. On mouse selection, breathe copies text to primary selection.
+.I Ctrl-c
+copies that to clipboard selection.
+.TP
+.B [Ctrl-|Alt-]g
+Goto page.
+.TP
+.B [Ctrl-|Alt-]s or /
+Search text. Append '?' to search backwards or '~' to search case-insensitive. Or both flags at the same time.
+.TP
+.B p
+Show current page number.
+.TP
+.B m
+Magnify current selection.
+.TP
+.B [
+Rotate page clockwise.
+.TP
+.B ]
+Rotate page counterclockwise.
+.TP
+.B Esc (in command mode)
+Exit to normal mode.
+.SH CUSTOMIZATION
+.B breathe
+can be customized by creating a custom config.h and recompiling.
+.SH COPYRIGHT
+.B breathe
+is free software, comes without any warranty, and is distributed under the terms of the Do What The Fuck You Want To Public License, Version 2.
+.SH AUTHOR
+Original author: Łukasz Krotowski (https://lkrotowski.com)
+.br
+Adapted for breathe by: [Malcolm Reed]

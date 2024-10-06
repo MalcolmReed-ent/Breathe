@@ -6,11 +6,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+#include <math.h>
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
+
+#include <cairo/cairo.h>
+#include <cairo/cairo-xlib.h>
 
 #include <poppler.h>
 
@@ -28,6 +32,7 @@ typedef struct {
     PopplerDocument *doc;
     PopplerPage *page;
     int page_num;
+    int total_pages;
     bool fit_page;
     bool scrolling_up;
     int next_pos_y;
@@ -69,46 +74,19 @@ typedef struct {
     Rectangle magnify;
     int pre_mag_y;
 
+    PopplerPage *second_page;
+    bool two_page_view;
+
     int rotation;
+    double zoom_level;
+
+    bool continuous_mode;
+    bool show_status_bar;
+    bool dark_mode;
+    char *file_name;
 } AppState;
 
-static void force_render_page(AppState *st, bool clear);
-
-typedef enum {
-    QUIT,
-    NEXT,
-    PREV,
-    FIRST,
-    LAST,
-    FIT_PAGE,
-    FIT_WIDTH,
-    DOWN,
-    UP,
-    PG_DOWN,
-    PG_UP,
-    BACK,
-    RELOAD,
-    COPY,
-    GOTO_PAGE,
-    SEARCH,
-    PAGE,
-    MAGNIFY,
-    ROTATE_CW,
-    ROTATE_CCW
-} Action;
-
-typedef struct {
-    unsigned mask;
-    KeySym ksym;
-    Action action;
-} Shortcut;
-
 #include "config.h"
-
-static bool print_error(const char *m) {
-    fprintf(stderr, "%s\n", m);
-    return false;
-}
 
 typedef struct {
     Display *display;
@@ -120,6 +98,13 @@ typedef struct {
     int fheight;
     int fbase;
 } SetupXRet;
+
+static void draw_status_bar(AppState *st);
+
+static bool print_error(const char *m) {
+    fprintf(stderr, "%s\n", m);
+    return false;
+}
 
 static SetupXRet setup_x(unsigned width, unsigned height, const char *file_name,
     Window root)
@@ -219,8 +204,8 @@ typedef struct {
     Rectangle crop;
 } PdfRenderConf;
 
-PdfRenderConf get_pdf_render_conf(bool fit_page, bool scrolling_up, int offset,
-    Rectangle p, PopplerPage *page, bool magnifying, Rectangle m, int rotation)
+static PdfRenderConf get_pdf_render_conf(bool fit_page, bool scrolling_up, int offset,
+    Rectangle p, PopplerPage *page, bool magnifying, Rectangle m, int rotation, double zoom_level)
 {
     double width, height;
     poppler_page_get_size(page, &width, &height);
@@ -258,18 +243,28 @@ PdfRenderConf get_pdf_render_conf(bool fit_page, bool scrolling_up, int offset,
             y = (p.height - h) / 2;
         }
     } else {
-        w = p.width;
-        dpi = (double)p.width * 72.0 / width;
+        dpi = (double)p.width * 72.0 / width * zoom_level;
+        w = width * dpi / 72.0;
         h = height * dpi / 72.0;
 
-        x = 0;
-        if ((double)p.width / (double)p.height <= width / height) {
+        x = p.x;
+        y = p.y;
+
+        if (w < p.width) {
+            x = (p.width - w) / 2;
+        }
+        if (h < p.height) {
             y = (p.height - h) / 2;
-        } else {
-            if (!scrolling_up)
-                y = offset;
-            else
-                y = p.height - h;
+        }
+        if (w > p.width) {
+            x = fmin(0, fmax(p.width - w, x));
+        }
+        if (h > p.height) {
+            if (!scrolling_up) {
+                y = fmin(0, fmax(p.height - h, y + offset));
+            } else {
+                y = fmin(0, fmax(p.height - h, y));
+            }
         }
     }
 
@@ -278,40 +273,97 @@ PdfRenderConf get_pdf_render_conf(bool fit_page, bool scrolling_up, int offset,
         {(int)(x0 * scale), (int)(y0 * scale), (int)(width * scale), (int)(height * scale)}};
 }
 
-static Pixmap render_pdf_page_to_pixmap(const AppState *st, const PdfRenderConf *prc)
+#include <cairo/cairo.h>
+#include <cairo/cairo-xlib.h>
+#include <poppler.h>
+#include "config.h"
+
+static Pixmap render_pdf_page_to_pixmap(AppState *st, const PdfRenderConf *prc)
 {
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, prc->crop.width, prc->crop.height);
+    Pixmap pixmap = XCreatePixmap(st->display, st->main, prc->pos.width, prc->pos.height,
+                                  DefaultDepth(st->display, DefaultScreen(st->display)));
+
+    cairo_surface_t *surface = cairo_xlib_surface_create(st->display, pixmap,
+                                                         DefaultVisual(st->display, DefaultScreen(st->display)),
+                                                         prc->pos.width, prc->pos.height);
     cairo_t *cr = cairo_create(surface);
 
-    cairo_save(cr);
-    cairo_set_source_rgb(cr, 1, 1, 1);
+    // Set background color based on dark mode
+    if (st->dark_mode) {
+        // Parse the hex color string to RGB values
+        int r, g, b;
+        sscanf(page_bg_color_dark + 1, "%02x%02x%02x", &r, &g, &b);
+        cairo_set_source_rgb(cr, r / 255.0, g / 255.0, b / 255.0);
+    } else {
+        cairo_set_source_rgb(cr, 1, 1, 1);  // White background for light mode
+    }
     cairo_paint(cr);
-    cairo_restore(cr);
 
-    cairo_scale(cr, prc->dpi / 72.0, prc->dpi / 72.0);
-    cairo_translate(cr, -prc->crop.x, -prc->crop.y);
+    cairo_save(cr);
 
+    // Apply zoom and rotation
+    cairo_translate(cr, prc->pos.width / 2.0, prc->pos.height / 2.0);
+    cairo_rotate(cr, st->rotation * M_PI / 180.0);
+    cairo_scale(cr, st->zoom_level, st->zoom_level);
+    cairo_translate(cr, -prc->pos.width / 2.0, -prc->pos.height / 2.0);
+
+    // Calculate the scale factor
+    double page_width, page_height;
+    poppler_page_get_size(st->page, &page_width, &page_height);
+    double scale_x = prc->pos.width / page_width;
+    double scale_y = prc->pos.height / page_height;
+    double scale = (scale_x < scale_y) ? scale_x : scale_y;
+
+    // Apply the scale
+    cairo_scale(cr, scale, scale);
+
+    // Render the PDF page
     poppler_page_render(st->page, cr);
 
+    cairo_restore(cr);
+
+    // Apply color inversion for dark mode
+    if (st->dark_mode) {
+        cairo_set_operator(cr, CAIRO_OPERATOR_DIFFERENCE);
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_paint(cr);
+    }
+
+    // Render the second page if in two-page view mode
+    if (st->two_page_view && st->second_page) {
+        cairo_save(cr);
+
+        // Calculate the position for the second page
+        double second_page_x = prc->pos.width / 2.0;
+        cairo_translate(cr, second_page_x, 0);
+
+        // Apply zoom and rotation for the second page
+        cairo_translate(cr, prc->pos.width / 4.0, prc->pos.height / 2.0);
+        cairo_rotate(cr, st->rotation * M_PI / 180.0);
+        cairo_scale(cr, st->zoom_level, st->zoom_level);
+        cairo_translate(cr, -prc->pos.width / 4.0, -prc->pos.height / 2.0);
+
+        // Apply the scale for the second page
+        cairo_scale(cr, scale, scale);
+
+        // Render the second PDF page
+        poppler_page_render(st->second_page, cr);
+
+        cairo_restore(cr);
+
+        // Apply color inversion for dark mode on the second page
+        if (st->dark_mode) {
+            cairo_rectangle(cr, second_page_x, 0, prc->pos.width / 2.0, prc->pos.height);
+            cairo_set_operator(cr, CAIRO_OPERATOR_DIFFERENCE);
+            cairo_set_source_rgb(cr, 1, 1, 1);
+            cairo_fill(cr);
+        }
+    }
+
     cairo_destroy(cr);
-
-    Pixmap pxm = XCreatePixmap(st->display,
-        DefaultRootWindow(st->display), prc->crop.width, prc->crop.height,
-        DefaultDepth(st->display, DefaultScreen(st->display)));
-
-    XImage *xim = XCreateImage(st->display,
-        DefaultVisual(st->display, DefaultScreen(st->display)), 24, ZPixmap, 0,
-        (char*)cairo_image_surface_get_data(surface), prc->crop.width, prc->crop.height, 32, 0);
-
-    XPutImage(st->display, pxm,
-        DefaultGC(st->display, DefaultScreen(st->display)),
-        xim, 0, 0, 0, 0, prc->crop.width, prc->crop.height);
-
-    xim->data = NULL;
-    XDestroyImage(xim);
     cairo_surface_destroy(surface);
 
-    return pxm;
+    return pixmap;
 }
 
 static void copy_pixmap_on_expose_event(const AppState *st, const Rectangle *prev,
@@ -360,12 +412,6 @@ static void copy_pixmap_on_expose_event(const AppState *st, const Rectangle *pre
     }
 }
 
-static void __attribute__((unused)) update_page_rotation(AppState *st)
-{
-    st->rotation = (st->rotation + 90) % 360;
-    force_render_page(st, true);
-}
-
 static void force_render_page(AppState *st, bool clear)
 {
     if (st->pdf != None && clear)
@@ -391,6 +437,23 @@ static void force_render_page(AppState *st, bool clear)
     e.xexpose.width  = attrs.width;
     e.xexpose.height = attrs.height;
     XSendEvent(st->display, st->main, False, ExposureMask, &e);
+
+    // Add scroll indicator
+    if (!st->fit_page) {
+        double scroll_percent = (double)(-st->pdf_pos.y) / (st->pdf_pos.height - st->main_pos.height);
+        int indicator_height = st->main_pos.height * (st->main_pos.height / (double)st->pdf_pos.height);
+        int indicator_y = scroll_percent * (st->main_pos.height - indicator_height);
+        
+        XSetForeground(st->display, st->status_gc, st->dark_mode ? WhitePixel(st->display, DefaultScreen(st->display)) : BlackPixel(st->display, DefaultScreen(st->display)));
+        XFillRectangle(st->display, st->main, st->status_gc, 
+                       st->main_pos.width - 10, indicator_y, 
+                       10, indicator_height);
+    }
+
+    // Draw status bar if enabled
+    if (st->show_status_bar) {
+        draw_status_bar(st);
+    }
 }
 
 static void send_expose(const AppState *st, const Rectangle *r)
@@ -411,7 +474,7 @@ static int get_pdf_scroll_diff(const AppState *st, double percent)
 
     int sc = st->pdf_pos.height * percent;
     if (sc > 0)
-    return sc < -st->pdf_pos.y ? sc : -st->pdf_pos.y;
+        return sc < -st->pdf_pos.y ? sc : -st->pdf_pos.y;
 
     return -sc < st->pdf_pos.height - st->main_pos.height + st->pdf_pos.y ?
         sc : -(st->pdf_pos.height - st->main_pos.height + st->pdf_pos.y);
@@ -521,6 +584,44 @@ static Rectangle get_status_pos(const AppState *st)
     return (Rectangle){0, st->main_pos.height - (st->fheight + 2), st->main_pos.width, st->fheight + 2};
 }
 
+static void draw_status_bar(AppState *st)
+{
+    char status[256];
+    snprintf(status, sizeof(status), "[%d/%d] %s", st->page_num, st->total_pages, st->file_name);
+
+    const char *text_color = st->dark_mode ? status_bar_text_color_dark : status_bar_text_color_light;
+    const char *bg_color = st->dark_mode ? status_bar_bg_color_dark : status_bar_bg_color_light;
+
+    XColor text_xcolor, bg_xcolor;
+    XAllocNamedColor(st->display, DefaultColormap(st->display, DefaultScreen(st->display)),
+                     text_color, &text_xcolor, &text_xcolor);
+    XAllocNamedColor(st->display, DefaultColormap(st->display, DefaultScreen(st->display)),
+                     bg_color, &bg_xcolor, &bg_xcolor);
+
+    XSetForeground(st->display, st->status_gc, bg_xcolor.pixel);
+    XFillRectangle(st->display, st->main, st->status_gc,
+                   st->status_pos.x, st->status_pos.y,
+                   st->status_pos.width, st->status_pos.height);
+
+    XSetForeground(st->display, st->status_gc, text_xcolor.pixel);
+
+    XFontStruct *font_info = XLoadQueryFont(st->display, status_bar_font);
+    if (font_info == NULL) {
+        fprintf(stderr, "Failed to load status bar font\n");
+        return;
+    }
+
+    XSetFont(st->display, st->status_gc, font_info->fid);
+
+    int text_width = XTextWidth(font_info, status, strlen(status));
+    int x = (st->status_pos.width - text_width) / 2;
+    int y = st->status_pos.y + (st->status_pos.height - font_info->ascent - font_info->descent) / 2 + font_info->ascent;
+
+    XDrawString(st->display, st->main, st->status_gc, x, y, status, strlen(status));
+
+    XFreeFont(st->display, font_info);
+}
+
 static void search_text(AppState *st)
 {
     bool backwards   = false;
@@ -568,7 +669,7 @@ static void search_text(AppState *st)
             break;
         }
 
-        if (!backwards && page < poppler_document_get_n_pages(st->doc))
+        if (!backwards && page < st->total_pages)
         {
             ++page;
             st->searching = false;
@@ -649,6 +750,35 @@ Args parse_args(int argc, char **argv)
     return (Args){fname, root};
 }
 
+static void render_page_lambda(AppState *st) {
+    if (st->page) {
+        g_object_unref(st->page);
+    }
+    st->page = poppler_document_get_page(st->doc, st->page_num - 1);
+    if (!st->page) {
+        char error_msg[100];
+        snprintf(error_msg, sizeof(error_msg), "Cannot create page: %d.", st->page_num);
+        print_error(error_msg);
+    }
+    
+    if (st->two_page_view && st->page_num < st->total_pages) {
+        if (st->second_page) {
+            g_object_unref(st->second_page);
+        }
+        st->second_page = poppler_document_get_page(st->doc, st->page_num);
+    } else {
+        if (st->second_page) {
+            g_object_unref(st->second_page);
+            st->second_page = NULL;
+        }
+    }
+    
+    force_render_page(st, true);
+    st->selection = (Rectangle){0, 0, 0, 0};
+    st->pdf_selection = (Rectangle){0, 0, 0, 0};
+    st->selecting = false;
+}
+
 int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
@@ -673,6 +803,12 @@ int main(int argc, char **argv)
     st.page_stack_capacity = 10;
     st.page_stack = malloc(st.page_stack_capacity * sizeof(PageAndOffset));
     st.rotation = 0;
+    st.zoom_level = 1.0;
+    st.two_page_view = false;
+    st.continuous_mode = false;
+    st.show_status_bar = true;
+    st.dark_mode = false;
+    st.file_name = strdup(file_name);
 
     st.doc = poppler_document_new_from_file(uri, NULL, &error);
     g_free(uri);
@@ -686,14 +822,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int num_pages = poppler_document_get_n_pages(st.doc);
-    if (num_pages <= 0) {
+    st.total_pages = poppler_document_get_n_pages(st.doc);
+    if (st.total_pages <= 0) {
         fprintf(stderr, "Error: The document has no pages or failed to load properly.\n");
         g_object_unref(st.doc);
         return 1;
     }
 
-    printf("Successfully loaded PDF with %d pages.\n", num_pages);
+    printf("Successfully loaded PDF with %d pages.\n", st.total_pages);
 
     st.page_num = 1;
     st.page = poppler_document_get_page(st.doc, st.page_num - 1);
@@ -728,22 +864,6 @@ int main(int argc, char **argv)
     st.fheight = xret.fheight;
     st.fbase   = xret.fbase;
 
-void render_page_lambda(AppState *st) {
-    if (st->page) {
-        g_object_unref(st->page);
-    }
-    st->page = poppler_document_get_page(st->doc, st->page_num - 1);
-    if (!st->page) {
-        char error_msg[100];
-        snprintf(error_msg, sizeof(error_msg), "Cannot create page: %d.", st->page_num);
-        print_error(error_msg);
-    }
-    force_render_page(st, true);
-    st->selection = (Rectangle){0, 0, 0, 0};
-    st->pdf_selection = (Rectangle){0, 0, 0, 0};
-    st->selecting = false;
-}
-
     XEvent event;
     while (true)
     {
@@ -756,7 +876,7 @@ void render_page_lambda(AppState *st) {
             {
                 PdfRenderConf prc = get_pdf_render_conf(st.fit_page, st.scrolling_up,
                     st.next_pos_y, st.main_pos, st.page, st.magnifying, st.magnify,
-                    st.rotation);
+                    st.rotation, st.zoom_level);
                 st.scrolling_up = false;
                 st.next_pos_y   = 0;
 
@@ -764,6 +884,10 @@ void render_page_lambda(AppState *st) {
                 st.pdf_pos = prc.pos;
             }
             copy_pixmap_on_expose_event(&st, &prev, &event.xexpose);
+            
+            if (st.show_status_bar) {
+                draw_status_bar(&st);
+            }
         }
 
         if (event.type == ConfigureNotify)
@@ -803,146 +927,177 @@ void render_page_lambda(AppState *st) {
                 }
             }
             else if (event.xclient.data.l[0] == (long)wmdel_atom)
+            {
                 goto endloop;
+            }
         }
 
         if (event.type == KeyPress)
         {
             KeySym ksym;
-            char buf[64];
-            XLookupString(&event.xkey, buf, sizeof(buf), &ksym, NULL);
+            char buf[32];
+            XLookupString(&event.xkey, buf, sizeof buf, &ksym, NULL);
 
             bool status = st.status;
-            for (unsigned i = 0; i < sizeof(shortcuts) / sizeof(Shortcut); ++i)
+            if (!status)
             {
-                const Shortcut *sc = &shortcuts[i];
-                if (!status && sc->ksym == ksym &&
-                    (sc->mask == AnyMask || sc->mask == event.xkey.state))
+                for (size_t i = 0; i < sizeof(shortcuts)/sizeof(shortcuts[0]); ++i)
                 {
-                    switch (sc->action)
+                    const Shortcut *sc = &shortcuts[i];
+                    if ((sc->mask == AnyMask || sc->mask == event.xkey.state) &&
+                        sc->ksym == ksym)
                     {
-                        case QUIT:
-                            goto endloop;
-                        case FIT_PAGE:
-                            if (!st.fit_page) {
-                                st.fit_page = true;
-                                force_render_page(&st, true);
-                            }
-                            break;
-                        case FIT_WIDTH:
-                            if (st.fit_page) {
-                                st.fit_page = false;
-                                force_render_page(&st, true);
-                            }
-                            break;
-                        case NEXT:
-                        case PG_DOWN:
-                            if (st.page_num < poppler_document_get_n_pages(st.doc)) {
-                                ++st.page_num;
-                                render_page_lambda(&st);
-                            }
-                            break;
-                        case PREV:
-                        case PG_UP:
-                            if (st.page_num > 1) {
-                                --st.page_num;
-                                render_page_lambda(&st);
-                            }
-                            break;
-                        case FIRST:
-                            st.page_num = 1;
-                            render_page_lambda(&st);
-                            break;
-                        case LAST:
-                            st.page_num = poppler_document_get_n_pages(st.doc);
-                            render_page_lambda(&st);
-                            break;
-                        case DOWN:
-                            if (!st.fit_page) {
-                                int diff = get_pdf_scroll_diff(&st, -arrow_scroll);
-                                if (diff != 0) {
-                                    st.pdf_pos.y += diff;
-                                    force_render_page(&st, false);
+                        switch (sc->action)
+                        {
+                            case QUIT:
+                                goto endloop;
+                            case FIT_PAGE:
+                                if (!st.fit_page) {
+                                    st.fit_page = true;
+                                    force_render_page(&st, true);
                                 }
-                            }
-                            break;
-                        case UP:
-                            if (!st.fit_page) {
-                                int diff = get_pdf_scroll_diff(&st, arrow_scroll);
-                                if (diff != 0) {
-                                    st.pdf_pos.y += diff;
-                                    force_render_page(&st, false);
+                                break;
+                            case FIT_WIDTH:
+                                if (st.fit_page) {
+                                    st.fit_page = false;
+                                    force_render_page(&st, true);
                                 }
-                            }
-                            break;
-                        case BACK:
-                            if (st.page_stack_size > 0) {
-                                PageAndOffset elem = st.page_stack[--st.page_stack_size];
-                                st.page_num = elem.page;
-                                st.next_pos_y = elem.offset;
+                                break;
+                            case NEXT:
+                            case PG_DOWN:
+                                if (st.page_num < st.total_pages) {
+                                    ++st.page_num;
+                                    render_page_lambda(&st);
+                                }
+                                break;
+                            case PREV:
+                            case PG_UP:
+                                if (st.page_num > 1) {
+                                    --st.page_num;
+                                    render_page_lambda(&st);
+                                }
+                                break;
+                            case FIRST:
+                                st.page_num = 1;
                                 render_page_lambda(&st);
-                            }
-                            break;
-case RELOAD:
-    g_object_unref(st.doc);
-    st.doc = poppler_document_new_from_file(file_name, NULL, NULL);
-    if (!st.doc) {
-        print_error("Error re-loading pdf file.");
-    }
-    if (st.page_num > poppler_document_get_n_pages(st.doc)) {
-        st.page_num = 1;
-    }
-    render_page_lambda(&st);
-    break;
-                        case COPY:
-                            if (st.pdf_selection.width > 0 && st.pdf_selection.height > 0) {
-                                copy_text(&st, false);
-                            }
-                            break;
-                        case GOTO_PAGE:
-                            st.status = true;
-                            st.input = true;
-                            snprintf(st.prompt, sizeof(st.prompt), "goto page [1, %d]: ", poppler_document_get_n_pages(st.doc));
-                            st.value[0] = '\0';
-                            send_expose(&st, &st.status_pos);
-                            break;
-                        case SEARCH:
-                            st.status = true;
-                            st.input = true;
-                            strcpy(st.prompt, "search: ");
-                            st.value[0] = '\0';
-                            send_expose(&st, &st.status_pos);
-                            break;
-                        case PAGE:
-                            st.status = true;
-                            st.input = false;
-                            snprintf(st.prompt, sizeof(st.prompt), "page %d/%d", st.page_num, poppler_document_get_n_pages(st.doc));
-                            st.value[0] = '\0';
-                            send_expose(&st, &st.status_pos);
-                            break;
-                        case MAGNIFY:
-                            if (st.pdf_selection.width > 0 && st.pdf_selection.height > 0) {
-                                st.magnifying = true;
-                                st.magnify = st.pdf_selection;
-                                st.selection = (Rectangle){0, 0, 0, 0};
-                                st.pdf_selection = (Rectangle){0, 0, 0, 0};
+                                break;
+                            case LAST:
+                                st.page_num = st.total_pages;
+                                render_page_lambda(&st);
+                                break;
+                            case DOWN:
+                                if (!st.fit_page) {
+                                    int diff = get_pdf_scroll_diff(&st, -arrow_scroll);
+                                    if (diff != 0) {
+                                        st.pdf_pos.y += diff;
+                                        force_render_page(&st, false);
+                                    }
+                                }
+                                break;
+                            case UP:
+                                if (!st.fit_page) {
+                                    int diff = get_pdf_scroll_diff(&st, arrow_scroll);
+                                    if (diff != 0) {
+                                        st.pdf_pos.y += diff;
+                                        force_render_page(&st, false);
+                                    }
+                                }
+                                break;
+                            case BACK:
+                                if (st.page_stack_size > 0) {
+                                    PageAndOffset elem = st.page_stack[--st.page_stack_size];
+                                    st.page_num = elem.page;
+                                    st.next_pos_y = elem.offset;
+                                    render_page_lambda(&st);
+                                }
+                                break;
+                            case RELOAD:
+                                g_object_unref(st.doc);
+                                st.doc = poppler_document_new_from_file(file_name, NULL, NULL);
+                                if (!st.doc) {
+                                    print_error("Error re-loading pdf file.");
+                                }
+                                if (st.page_num > st.total_pages) {
+                                    st.page_num = 1;
+                                }
+                                render_page_lambda(&st);
+                                break;
+                            case COPY:
+                                if (st.pdf_selection.width > 0 && st.pdf_selection.height > 0) {
+                                    copy_text(&st, false);
+                                }
+                                break;
+                            case GOTO_PAGE:
+                                st.status = true;
+                                st.input = true;
+                                snprintf(st.prompt, sizeof(st.prompt), "goto page [1, %d]: ", st.total_pages);
+                                st.value[0] = '\0';
+                                send_expose(&st, &st.status_pos);
+                                break;
+                            case SEARCH:
+                                st.status = true;
+                                st.input = true;
+                                strcpy(st.prompt, "search: ");
+                                st.value[0] = '\0';
+                                send_expose(&st, &st.status_pos);
+                                break;
+                            case PAGE:
                                 st.status = true;
                                 st.input = false;
-                                strcpy(st.prompt, "magnify");
+                                snprintf(st.prompt, sizeof(st.prompt), "page %d/%d", st.page_num, st.total_pages);
                                 st.value[0] = '\0';
-                                st.pre_mag_y = st.pdf_pos.y;
-                                st.pdf_pos.y = 0;
+                                send_expose(&st, &st.status_pos);
+                                break;
+                            case MAGNIFY:
+                                if (st.pdf_selection.width > 0 && st.pdf_selection.height > 0) {
+                                    st.magnifying = true;
+                                    st.magnify = st.pdf_selection;
+                                    st.selection = (Rectangle){0, 0, 0, 0};
+                                    st.pdf_selection = (Rectangle){0, 0, 0, 0};
+                                    st.status = true;
+                                    st.input = false;
+                                    strcpy(st.prompt, "magnify");
+                                    st.value[0] = '\0';
+                                    st.pre_mag_y = st.pdf_pos.y;
+                                    st.pdf_pos.y = 0;
+                                    force_render_page(&st, true);
+                                }
+                                break;
+                            case ROTATE_CW:
+                                st.rotation = (st.rotation + 90) % 360;
                                 force_render_page(&st, true);
-                            }
-                            break;
-                        case ROTATE_CW:
-                            st.rotation = (st.rotation + 90) % 360;
-                            force_render_page(&st, true);
-                            break;
-                        case ROTATE_CCW:
-                            st.rotation = (st.rotation - 90 + 360) % 360;
-                            force_render_page(&st, true);
-                            break;
+                                break;
+                            case ROTATE_CCW:
+                                st.rotation = (st.rotation - 90 + 360) % 360;
+                                force_render_page(&st, true);
+                                break;
+                            case ZOOM_IN:
+                                st.zoom_level *= zoom_step;
+                                st.fit_page = false;
+                                force_render_page(&st, true);
+                                break;
+                            case ZOOM_OUT:
+                                st.zoom_level /= zoom_step;
+                                st.fit_page = false;
+                                force_render_page(&st, true);
+                                break;
+                            case TOGGLE_TWO_PAGE_VIEW:
+                                st.two_page_view = !st.two_page_view;
+                                render_page_lambda(&st);
+                                break;
+                            case TOGGLE_CONTINUOUS_MODE:
+                                st.continuous_mode = !st.continuous_mode;
+                                force_render_page(&st, true);
+                                break;
+                            case TOGGLE_STATUS_BAR:
+                                st.show_status_bar = !st.show_status_bar;
+                                force_render_page(&st, true);
+                                break;
+                            case TOGGLE_DARK_MODE:
+                                st.dark_mode = !st.dark_mode;
+                                force_render_page(&st, true);
+                                break;
+                        }
                     }
                 }
             }
@@ -981,7 +1136,7 @@ case RELOAD:
                     if (strncmp(st.prompt, "goto", 4) == 0)
                     {
                         int page = atoi(st.value);
-                        if (page >= 1 && page <= poppler_document_get_n_pages(st.doc))
+                        if (page >= 1 && page <= st.total_pages)
                         {
                             st.status = false;
                             st.page_num = page;
@@ -1017,7 +1172,37 @@ case RELOAD:
         if (event.type == ButtonPress)
         {
             int button = event.xbutton.button;
-            if (button == Button4 && st.fit_page && !st.magnifying)
+            unsigned int state = event.xbutton.state;
+
+            if ((state & ControlMask) && (button == Button4 || button == Button5))
+            {
+                double zoom_factor = (button == Button4) ? zoom_step : 1.0 / zoom_step;
+                double old_zoom = st.zoom_level;
+                st.zoom_level *= zoom_factor;
+                st.zoom_level = fmax(min_zoom, fmin(max_zoom, st.zoom_level));
+                st.fit_page = false;
+
+                // Calculate the mouse position relative to the PDF
+                double mouse_x = (event.xbutton.x - st.pdf_pos.x) / (double)st.pdf_pos.width;
+                double mouse_y = (event.xbutton.y - st.pdf_pos.y) / (double)st.pdf_pos.height;
+
+                // Calculate new PDF dimensions
+                double new_width = st.pdf_pos.width * (st.zoom_level / old_zoom);
+                double new_height = st.pdf_pos.height * (st.zoom_level / old_zoom);
+
+                // Calculate new PDF position to keep the mouse point stationary
+                st.pdf_pos.x = event.xbutton.x - mouse_x * new_width;
+                st.pdf_pos.y = event.xbutton.y - mouse_y * new_height;
+
+                // Ensure the PDF doesn't move out of bounds
+                st.pdf_pos.x = fmin(st.pdf_pos.x, 0);
+                st.pdf_pos.y = fmin(st.pdf_pos.y, 0);
+                st.pdf_pos.x = fmax(st.pdf_pos.x, st.main_pos.width - new_width);
+                st.pdf_pos.y = fmax(st.pdf_pos.y, st.main_pos.height - new_height);
+
+                force_render_page(&st, true);
+            }
+            else if (button == Button4 && st.fit_page && !st.magnifying)
             {
                 if (st.page_num > 1)
                 {
@@ -1026,17 +1211,15 @@ case RELOAD:
                     render_page_lambda(&st);
                 }
             }
-
-            if (button == Button5 && st.fit_page && !st.magnifying)
+            else if (button == Button5 && st.fit_page && !st.magnifying)
             {
-                if (st.page_num < poppler_document_get_n_pages(st.doc))
+                if (st.page_num < st.total_pages)
                 {
                     ++st.page_num;
                     render_page_lambda(&st);
                 }
             }
-
-            if (button == Button4 && !st.fit_page)
+            else if (button == Button4 && !st.fit_page)
             {
                 int diff = get_pdf_scroll_diff(&st, mouse_scroll);
                 if (diff != 0)
@@ -1053,8 +1236,7 @@ case RELOAD:
                     }
                 }
             }
-
-            if (button == Button5 && !st.fit_page)
+            else if (button == Button5 && !st.fit_page)
             {
                 int diff = get_pdf_scroll_diff(&st, -mouse_scroll);
                 if (diff != 0)
@@ -1063,15 +1245,14 @@ case RELOAD:
                     force_render_page(&st, false);
                 }
                 else {
-                    if (st.page_num < poppler_document_get_n_pages(st.doc) && !st.magnifying)
+                    if (st.page_num < st.total_pages && !st.magnifying)
                     {
                         ++st.page_num;
                         render_page_lambda(&st);
                     }
                 }
             }
-
-            if (button == Button1 && !st.magnifying)
+            else if (button == Button1 && !st.magnifying)
             {
                 if (event.xbutton.x >= st.pdf_pos.x &&
                     event.xbutton.y >= st.pdf_pos.y &&
@@ -1186,6 +1367,7 @@ endloop:
     free(st.page_stack);
     free(st.primary);
     free(st.clipboard);
+    free(st.file_name);
     free(args.fname);
     return 0;
 }

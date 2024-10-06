@@ -1,0 +1,65 @@
+FEATURES
+
+Breathe: A Lightweight and Customizable PDF Viewer
+
+General Features:
+- Minimalist and efficient PDF rendering
+- Keyboard-driven interface for quick navigation
+- Customizable appearance and behavior through config.h
+- Support for various PDF viewing modes
+
+Navigation:
+- Page-by-page navigation (next, previous, first, last)
+- Smooth scrolling within pages (up, down)
+- Quick jumping to specific pages
+- Back navigation to previously viewed pages
+
+View Modes:
+- Single page view
+- Two-page view
+- Continuous scrolling mode
+
+Zoom and Rotation:
+- Zoom in and out functionality
+- Fit page to window
+- Fit page width to window
+- Custom zoom levels
+- Page rotation (clockwise and counter-clockwise)
+
+Search:
+- Text search functionality within PDF documents
+
+Selection and Copying:
+- Text selection support
+- Copy selected text to clipboard
+
+User Interface:
+- Status bar displaying current page number and file name
+- Toggle-able status bar visibility
+- Dark mode support with Nord-inspired color scheme
+
+Performance:
+- Efficient rendering using Cairo graphics library
+- Page caching for improved performance
+
+Customization:
+- Configurable keyboard shortcuts
+- Adjustable scrolling speed
+- Customizable fonts for rendering
+- Configurable color schemes for light and dark modes
+
+PDF Handling:
+- Support for various PDF features using Poppler library
+- Link following within PDF documents
+
+Installation:
+- Simple installation process
+- Man page documentation
+
+Portability:
+- Designed for X11-based systems
+- Minimal dependencies (Poppler, Cairo, X11)
+
+Open Source:
+- Free and open-source software
+- Easily extendable and modifiable codebase

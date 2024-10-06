@@ -1,0 +1,52 @@
+BUGS
+
+Breathe PDF Viewer - Known Issues and Limitations
+
+Last updated: Sat Oct 5, 2024
+
+This file contains a list of known bugs, issues, and limitations in the current version of Breathe PDF Viewer. If you encounter any issues not listed here, please report them to the project's issue tracker.
+
+Known Bugs:
+1. Double page view overlap
+   - Severity: Medium
+   - Affected versions: All versions
+   - Description: In two-page view mode, pages overlap instead of displaying side by side.
+   - Workaround: None available. Use single page view as an alternative.
+
+2. Imprecise text selection
+   - Severity: Low
+   - Affected versions: All versions
+   - Description: Visual text selection is not clean, but copy and paste functionality (Ctrl+C, Ctrl+V) works correctly.
+   - Workaround: Use Ctrl+C to copy selected text even if the visual selection appears imprecise.
+
+3. Incorrect page rotation
+   - Severity: High
+   - Affected versions: All versions
+   - Description: Page rotation twists the text onto a horizontal page instead of rotating the entire page. The result is uneven and poorly formatted.
+   - Workaround: None available. Avoid using rotation feature until fixed.
+
+4. Inconsistent dark mode background color
+   - Severity: Medium
+   - Affected versions: All versions
+   - Description: The page background color in dark mode doesn't match the hexcode specified in config.h. It appears to overlap with blue, resulting in a black-brown, light blue, or dark color.
+   - Workaround: Experiment with different color codes in config.h to achieve desired appearance.
+
+Limitations:
+1. Large PDF files (>1GB) may cause performance issues or crashes.
+2. Some complex PDF forms may not render correctly.
+3. JavaScript-enabled interactive PDFs are not supported.
+4. Embedded multimedia content (audio, video) is not playable within the viewer.
+
+Known Compatibility Issues:
+No specific compatibility issues have been reported at this time.
+
+Reporting Bugs:
+If you encounter a bug not listed here, please report it to our issue tracker at [Your Issue Tracker URL]. When reporting a bug, please include the following information:
+- Version of Breathe PDF Viewer
+- Operating system and version
+- Steps to reproduce the issue
+- Expected behavior
+- Actual behavior
+- Any error messages or logs
+
+We appreciate your help in improving Breathe PDF Viewer!

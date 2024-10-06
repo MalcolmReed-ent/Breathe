@@ -1,7 +1,7 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 `pkg-config --cflags poppler-glib x11`
-LDFLAGS = `pkg-config --libs poppler-glib x11`
-DEPS = coordconv.h rectangle.h config.def.h
+CFLAGS = -Wall -Wextra -O2 `pkg-config --cflags poppler-glib x11 cairo`
+LDFLAGS = `pkg-config --libs poppler-glib x11 cairo` -lm
+DEPS = coordconv.h rectangle.h config.h
 OBJ = main.o coordconv.o rectangle.o
 
 PREFIX ?= /usr/local
